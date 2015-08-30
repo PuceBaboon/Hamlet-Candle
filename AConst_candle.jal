@@ -1,0 +1,150 @@
+
+--
+--   $Id: AConst_candle.jal,v 1.8 2015/07/26 22:42:02 anoncvs Exp $
+--
+--   Text-based candle flicker.  The ASCII values of the characters read from the
+--   flicker_data[] text string are used to set the PWM on/off ratio on the LED pin.
+--
+
+--
+-- Based on:-
+--
+--  Pete Mills' original ATTiny85, sampled candle:-
+--      petemills.blogspot.com/2012/02/attiny-candle.html
+--
+--  Martin Harizanov's "FunkyLED_candle":-
+--  http:--harizanov.com/2012/12/funky-led-candle
+--
+--
+--   You can verify that the text does make it into the firmware using this command:-
+--
+--		strings OUTPUT.cod | sed -e 's/4//g'
+--
+--   [Replace the word "OUTPUT" with the actual name of your file]
+--
+--   NOTE:-  The upper limit for the amount of text is 1kB.  If the text length exceeds
+--           this limit the compiler will silently truncate it to fit.
+--
+
+
+-- Specify target processor type.
+include 12f683
+
+
+-- Use internal oscillator at 8MHz
+pragma target CLOCK	8_000_000;		-- Tell the compiler what the clock freq is.
+pragma target OSC	INTOSC_NOCLKOUT;	-- Internal clock, no external crystal needed.
+pragma target WDT	disabled;		-- Disable the watchdog reset.
+OSCCON_IRCF		= 0b_111;		-- Set the internal clock frequency to 8MHz.
+
+enable_digital_io();				-- Initialize all I/O pins to digital.
+
+
+-- Fuses section.
+pragma target OSC	INTOSC_NOCLKOUT		-- Use internal clock source, no clock-output.
+pragma target WDT	DISABLED		-- Disable watchdog.
+pragma target PWRTE	DISABLED		-- Disable power-up timer.
+pragma target IESO	DISABLED		-- Disable two-speed start-up.
+pragma target BROWNOUT	DISABLED		-- Disable brown-out detection.
+pragma target MCLR	INTERNAL		-- R/C reset circuitry -not- present on -MCLR.
+
+
+-- PWM setup -------
+include delay;					-- JALLIB: Timer/Delay Library.
+include random;					-- JALLIB: Random number generator.
+include pwm_hardware;				-- JALLIB: PWM Library.
+pwm_max_resolution(4);				-- Set to high resolution output (pre-scalar = 4).
+pin_CCP1_direction	= output;		-- [GP2/A2] Physical pin #5.  The LED is connected to this pin.
+alias LED0		is pin_GP0;
+alias LED1		is pin_GP1;
+alias LED4		is pin_GP4;
+alias LED5		is pin_GP5;
+pin_GP0_direction	= output;
+pin_GP1_direction	= output;
+pin_GP4_direction	= output;
+pin_GP5_direction	= output;
+LED0			= ON;
+LED1			= ON;
+LED4			= ON;
+LED5			= ON;
+
+--
+-- Constant and variable definitions.
+--
+--   NOTE:- The byte constant, flicker_data[], has an internal limit of 1kB. 
+--          You can add longer text, but it will be silently truncated at
+--          compile time.
+--
+const byte flicker_data[]	= " We the People of the United States, in Order to form a more perfect Union, establish Justice, insure domestic Tranquility, provide for the common defence, promote the general Welfare, and secure the Blessings of Liberty to ourselves and our Posterity, do ordain and establish this Constitution for the United States of America.";
+const word max_data		= count(flicker_data);	-- Set to the size of the flicker_data array.
+const byte flicker_t_norm	= 100;			-- Normal display time (in ms) for each flicker state.
+const byte flicker_t_gust	= 50;			-- Display time for flicker state during a gust of wind.
+const byte gust_mask		= 127;			-- Limit the length of a gust cycle. (127/0x7F/0b0111_111 = ~5 seconds max).
+var bit gust_state		= 0;			-- A binary anemometer (our gust indicator).
+var byte gust_counter		= 0;			-- Keep track of our gust duration.
+var byte rnd_state		= 0;			-- Random number storage.
+var word cycle_counter		= 0;			-- Keep track of the number of cycles.
+var word last_gust		= 0;			-- When we saw the last gust.
+
+
+--
+--  Forever.  Dedication, PIC style.
+--
+forever loop
+
+	--
+	-- Grab a new random number.  This is expensive, so we only
+	-- do it once per cycle.
+	--
+	rnd_state	= random_byte();
+
+
+	--
+	-- Change the PWM ratio to the next flicker "state".
+	-- This only changes pin_CCP1 (where our LED is attached).
+	--
+	-- The "if" statement adds some random intensity variation
+	-- to the candle flame by inverting the PWM on/off ratio.
+	--
+	if ((cycle_counter % word(rnd_state)) != 0) then	
+		pwm1_set_dutycycle_ratio(1023 - word((flicker_data[cycle_counter] * 2) - 250));	-- Normal.
+	else
+		pwm1_set_dutycycle_ratio(word(flicker_data[cycle_counter] * 4));	-- Brighter.
+	end if
+
+
+	-- Update the state counter.
+	cycle_counter = cycle_counter + 1;
+	if (cycle_counter > max_data) then
+		cycle_counter = 0;
+	end if
+
+
+	--
+	-- This delay sets the duration for which our current state (PWM setting)
+	-- is displayed on the LED.
+	-- The wind "gust" setting reduces the amount of time for each display state, thus
+	-- increasing the amount of candle flicker.
+	--
+	if (gust_state) then
+
+		LED4	= OFF;
+
+		gust_counter = gust_counter - 1;
+		if (gust_counter == 0) then
+			gust_state = FALSE;					-- Reset the gust indicator.
+			last_gust = cycle_counter;				-- Save the time we saw the last gust.
+		end if
+		delay_1ms(flicker_t_gust);					-- Delay between gust flicker "states".
+	else
+
+		LED4	= ON;
+
+		if (cycle_counter <= last_gust & (rnd_state % 2) == 0) then
+			gust_counter = rnd_state & gust_mask;			-- Get a semi-random gust duration count.
+			gust_state = TRUE;					-- Trigger gust on next cycle.
+		end if
+		delay_1ms(flicker_t_norm);					-- Delay between normal flicker "states".
+	end if
+
+end loop
